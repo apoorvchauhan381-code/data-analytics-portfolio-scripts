@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+
+# Generated data outputs - regenerate with generate_sample_data.py
+data/*.csv
