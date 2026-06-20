@@ -1,2 +1,209 @@
-# data-analytics-portfolio-scripts
-ETL and KPI scoring patterns from real-world analytics work, demonstrated with synthetic data
+[README.md](https://github.com/user-attachments/files/29167308/README.md)
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Data & Analytics Portfolio Scripts
+
+A small set of working Python scripts demonstrating ETL and KPI-scoring patterns
+used in real-world operational analytics work.
+
+## 📋 About
+
+These scripts are **generalised, synthetic-data demonstrations** of patterns I've
+used in production analytics work in the aviation industry — rebuilt here with
+fully synthetic data so they can be shared publicly without any confidentiality
+concerns. No real company data, systems, or proprietary logic is included.
+
+The patterns themselves mirror real challenges:
+- Consolidating data from multiple systems with different schemas
+- Calculating weighted, multi-metric performance scores across many business units
+- Translating performance scores into business outcomes (bonus/penalty logic)
+
+## 📁 What's Here
+
+| Script | What it demonstrates |
+|---|---|
+| `generate_sample_data.py` | Generates synthetic multi-source operational data (run this first) |
+| `etl_pipeline.py` | Extracts, cleans, and merges two differently-shaped data sources into one analysis-ready table |
+| `kpi_weighted_scoring.py` | Calculates a weighted performance score across multiple KPIs (each with independent weightings) and assigns business outcomes |
+
+## 🚀 Getting Started
+
+```bash
+git clone https://github.com/apoorvchauhan381-code/data-analytics-portfolio-scripts
+cd data-analytics-portfolio-scripts
+pip install -r requirements.txt
+
+# Run in order:
+python generate_sample_data.py
+python etl_pipeline.py
+python kpi_weighted_scoring.py
+```
+
+Each script logs its steps and writes output to the `/data` folder so you can
+inspect intermediate and final results.
+
+## 🛠️ Tech Stack
+
+```
+Python 3.10+
+├── pandas, numpy   # Data manipulation & transformation
+└── logging         # Pipeline observability
+```
+
+## 🔍 Background
+
+This pattern is based on real work consolidating multi-source vendor and
+operations data across 120+ stations and reducing a manual, multi-week
+Excel-based scoring process to an automated pipeline. The version here uses
+entirely synthetic data and simplified logic for public sharing.
+
+## 📝 Notes
+
+This is a personal portfolio repository, not affiliated with or representing
+any current or former employer. All data is synthetically generated.
+
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+
+# Generated data outputs - regenerate with generate_sample_data.py
+data/*.csv
+
+"""
+kpi_weighted_scoring.py
+-------------------------
+Demonstrates a weighted multi-metric KPI scoring model — the same pattern
+used in real-world vendor/station performance scorecards where multiple
+KPIs (each with different business importance) are combined into a single
+performance score, which then drives incentive/penalty outcomes.
+
+This is a generalised, synthetic-data version of a pattern commonly used
+in operational analytics: e.g. scoring 100+ business units across several
+weighted metrics to produce a single comparable performance index.
+
+Usage:
+    python kpi_weighted_scoring.py
+    (run etl_pipeline.py first to generate consolidated_station_summary.csv)
+"""
+
+import pandas as pd
+import os
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+logger = logging.getLogger(__name__)
+
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+
+
+def load_inputs():
+    """Load the consolidated station summary and the SLA/weighting reference table."""
+    summary_path = os.path.join(DATA_DIR, "consolidated_station_summary.csv")
+    sla_path = os.path.join(DATA_DIR, "sla_targets.csv")
+
+    if not os.path.exists(summary_path):
+        raise FileNotFoundError(
+            "consolidated_station_summary.csv not found. Run etl_pipeline.py first."
+        )
+
+    summary = pd.read_csv(summary_path)
+    sla = pd.read_csv(sla_path).rename(columns={"station_id": "station"})
+
+    merged = summary.merge(sla, on="station", how="inner")
+    logger.info(f"Loaded {len(merged)} stations with KPI + weighting data")
+    return merged
+
+
+def normalise_metric(series: pd.Series, target: pd.Series, higher_is_better: bool = True) -> pd.Series:
+    """
+    Convert a raw metric into a 0-100 'performance vs target' score.
+    Scores above 100 mean the station beat its target; below 100 means it missed.
+    """
+    if higher_is_better:
+        score = (series / target) * 100
+    else:
+        # for metrics where lower is better (e.g. turnaround minutes), invert the ratio
+        score = (target / series) * 100
+    return score.clip(lower=0, upper=150)  # cap extreme outliers for readability
+
+
+def calculate_weighted_score(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Combine three independently-weighted KPIs into a single weighted performance score:
+      1. On-time performance (vs target)   - higher is better
+      2. Turnaround time (vs target)        - lower is better
+      3. Billing accuracy (vs 100% target)  - higher is better
+
+    Each station's weights come from the SLA reference table, mirroring a
+    real scorecard where different metrics can carry different importance
+    per business unit or contract.
+    """
+    df = df.copy()
+
+    df["otp_score"] = normalise_metric(df["avg_otp_pct"], df["otp_target_pct"], higher_is_better=True)
+    df["turnaround_score"] = normalise_metric(
+        df["avg_turnaround_minutes"], df["turnaround_target_minutes"], higher_is_better=False
+    )
+    df["billing_score"] = normalise_metric(df["billing_accuracy_pct"], pd.Series([100] * len(df)), higher_is_better=True)
+
+    df["weighted_score"] = (
+        df["otp_score"] * df["weight_otp"]
+        + df["turnaround_score"] * df["weight_turnaround"]
+        + df["billing_score"] * df["weight_billing_accuracy"]
+    ).round(2)
+
+    return df
+
+
+def assign_incentive_penalty(df: pd.DataFrame, bonus_threshold: float = 100.0, penalty_threshold: float = 85.0) -> pd.DataFrame:
+    """
+    Translate the weighted score into a business outcome:
+    bonus, neutral, or penalty — mirroring how a scorecard model feeds
+    directly into financial outcomes for vendors/stations.
+    """
+    df = df.copy()
+
+    def classify(score):
+        if score >= bonus_threshold:
+            return "Bonus"
+        elif score < penalty_threshold:
+            return "Penalty"
+        return "Neutral"
+
+    df["outcome"] = df["weighted_score"].apply(classify)
+    return df
+
+
+def run_scoring():
+    logger.info("Starting weighted KPI scoring model...")
+
+    data = load_inputs()
+    scored = calculate_weighted_score(data)
+    final = assign_incentive_penalty(scored)
+
+    output_cols = [
+        "station", "otp_score", "turnaround_score", "billing_score",
+        "weighted_score", "outcome"
+    ]
+    result = final[output_cols].sort_values("weighted_score", ascending=False)
+
+    output_path = os.path.join(DATA_DIR, "station_performance_scorecard.csv")
+    result.to_csv(output_path, index=False)
+    logger.info(f"Wrote scorecard -> {os.path.basename(output_path)} ({len(result)} stations)")
+
+    outcome_counts = result["outcome"].value_counts().to_dict()
+    logger.info(f"Outcome distribution: {outcome_counts}")
+
+    return result
+
+
+if __name__ == "__main__":
+    scorecard = run_scoring()
+    print("\nTop 5 performing stations:\n")
+    print(scorecard.head(5).to_string(index=False))
+    print("\nBottom 5 performing stations:\n")
+    print(scorecard.tail(5).to_string(index=False))
+
